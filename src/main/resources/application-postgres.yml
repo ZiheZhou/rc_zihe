@@ -1,0 +1,13 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/notification_gateway
+    driver-class-name: org.postgresql.Driver
+    username: notification
+    password: notification
+  sql:
+    init:
+      mode: always
+
+notification:
+  scheduling:
+    enabled: true
