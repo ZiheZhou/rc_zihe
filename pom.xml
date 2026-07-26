@@ -48,7 +48,7 @@
             </dependency>
             <dependency>
                 <groupId>org.wiremock</groupId>
-                <artifactId>wiremock</artifactId>
+                <artifactId>wiremock-standalone</artifactId>
                 <version>${wiremock.version}</version>
             </dependency>
             <dependency>
@@ -120,7 +120,7 @@
         </dependency>
         <dependency>
             <groupId>org.wiremock</groupId>
-            <artifactId>wiremock</artifactId>
+            <artifactId>wiremock-standalone</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
