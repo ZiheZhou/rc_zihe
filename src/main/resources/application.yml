@@ -27,6 +27,7 @@ notification:
   lease-duration-ms: 60000
   alert:
     webhook-url: ""
+    cooldown-seconds: 300
   idempotency:
     retention-days: 7
 
