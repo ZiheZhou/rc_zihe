@@ -44,10 +44,11 @@ CREATE TABLE IF NOT EXISTS vendor_config (
     headers TEXT,
     body_template TEXT,
     timeout_ms INT NOT NULL,
-    retry_policy TEXT,
-    rate_limit TEXT,
-    idempotency_key_location VARCHAR(16),
-    idempotency_key_name VARCHAR(255),
+    retry_policy TEXT NOT NULL,
+    rate_limit TEXT NOT NULL,
+    circuit_breaker TEXT NOT NULL,
+    idempotency_key_location VARCHAR(16) NOT NULL,
+    idempotency_key_name VARCHAR(255) NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
