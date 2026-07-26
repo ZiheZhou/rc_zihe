@@ -2,6 +2,7 @@ package com.examine.api;
 
 import com.examine.api.dto.ErrorResponse;
 import com.examine.application.NotificationNotFoundException;
+import com.examine.application.VendorConfigNotFoundException;
 import com.examine.application.VendorNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,6 +26,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(NotificationNotFoundException.class)
     public ResponseEntity<ErrorResponse> notFound(NotificationNotFoundException e) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ErrorResponse("NOT_FOUND", e.getMessage()));
+    }
+
+    @ExceptionHandler(VendorConfigNotFoundException.class)
+    public ResponseEntity<ErrorResponse> vendorConfigNotFound(VendorConfigNotFoundException e) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(new ErrorResponse("NOT_FOUND", e.getMessage()));
     }
