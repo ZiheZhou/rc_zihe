@@ -1,0 +1,37 @@
+spring:
+  application:
+    name: notification-gateway
+  datasource:
+    url: jdbc:h2:file:./data/notification-gateway;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+    open-in-view: false
+  sql:
+    init:
+      schema-locations: classpath:schema.sql
+      mode: embedded
+
+notification:
+  scheduling:
+    enabled: true
+  scheduler:
+    fixed-delay-ms: 2000
+    batch-size: 100
+  worker:
+    pool-size: 10
+  lease-duration-ms: 60000
+  alert:
+    webhook-url: ""
+  idempotency:
+    retention-days: 7
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
