@@ -1,0 +1,6 @@
+notification:
+  scheduling:
+    enabled: true
+  scheduler:
+    fixed-delay-ms: 100
+    batch-size: 50
