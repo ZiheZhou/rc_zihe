@@ -1,6 +1,6 @@
 # Notification Gateway 实现计划
 
-> **For agentic workers:** 使用 superpowers:subagent-driven-development 或 superpowers:executing-plans 按任务顺序实现。步骤使用 checkbox（`- [ ]`）追踪。
+> **For agentic workers:** 使用 superpowers:subagent-driven-development 或 superpowers:executing-plans 按任务顺序实现。步骤使用 checkbox（`- [x]`）追踪。
 >
 > 本计划为精简版：只包含任务拆解、文件结构、接口约定，不含完整代码。实现时以 `docs/technical-design.md` 为详细设计依据。
 
@@ -302,13 +302,13 @@ notification:
 **Files:** pom.xml（Spring Boot 3.4.1 parent + web/data-jpa/validation/actuator/h2/postgresql/commons-text/bucket4j/resilience4j/test+wiremock+awaitility+testcontainers）、application.yml、schema.sql、`NotificationGatewayApplication.java`、删除 `Main.java`、`.gitignore` 追加 `data/`、Maven Wrapper
 
 **Steps:**
-- [ ] `git init`
-- [ ] 重写 pom.xml，添加全部依赖
-- [ ] `mvn -N wrapper:wrapper`（生成 mvnw，OpenSpec 任务 10.1 要求 `./mvnw test`）
-- [ ] 写 application.yml（H2 file 模式 `MODE=PostgreSQL`）、schema.sql（三张表 + 索引，兼容 PostgreSQL）
-- [ ] 主类 + `contextLoads` 冒烟测试
-- [ ] `./mvnw -q compile` 通过；`./mvnw -q test` 通过
-- [ ] Commit: `chore: spring boot project skeleton`
+- [x] `git init`
+- [x] 重写 pom.xml，添加全部依赖
+- [x] `mvn -N wrapper:wrapper`（生成 mvnw，OpenSpec 任务 10.1 要求 `./mvnw test`）
+- [x] 写 application.yml（H2 file 模式 `MODE=PostgreSQL`）、schema.sql（三张表 + 索引，兼容 PostgreSQL）
+- [x] 主类 + `contextLoads` 冒烟测试
+- [x] `./mvnw -q compile` 通过；`./mvnw -q test` 通过
+- [x] Commit: `chore: spring boot project skeleton`
 
 ### Task 2: Domain 模型与状态机
 
@@ -318,15 +318,15 @@ notification:
 
 **测试要点:** 状态转换（create→PENDING、markSending 带锁、markSuccess 释放锁并记 deliveredAt、markFailed attempt+1、markDeadLettered 不加 attempt、reschedule 不改 attempt、replay 回 PENDING）。
 
-- [ ] 写失败测试 → 实现 → 通过 → Commit: `feat: domain model and state machine`
+- [x] 写失败测试 → 实现 → 通过 → Commit: `feat: domain model and state machine`
 
 ### Task 3: VendorConfig 配置模型
 
 **Files:** domain/model/config/ 下 7 个类（VendorConfig、RetryPolicySettings、RateLimitSettings、CircuitBreakerSettings、CircuitBreakerMode、HttpMethod、IdempotencyKeyLocation）
 
-- [ ] 实现 records/enums + 简单构造校验（如 maxAttempts>0）
-- [ ] 单测（默认值/校验）
-- [ ] Commit: `feat: vendor config model`
+- [x] 实现 records/enums + 简单构造校验（如 maxAttempts>0）
+- [x] 单测（默认值/校验）
+- [x] Commit: `feat: vendor config model`
 
 ### Task 4: RetryPolicy 策略族
 
@@ -334,7 +334,7 @@ notification:
 
 **测试要点:** hint 优先于退避；attempt 1→[base/2, base]；attempt 3→[4·base/2, 4·base]；封顶 maxDelay；allowRetry 边界。固定种子 Random 保证确定性。
 
-- [ ] 测试 → 实现 → Commit: `feat: retry policy with exponential backoff and jitter`
+- [x] 测试 → 实现 → Commit: `feat: retry policy with exponential backoff and jitter`
 
 ### Task 5: HttpOutcome + DeliveryResult + Classifier
 
@@ -342,7 +342,7 @@ notification:
 
 **测试要点:** 2xx/429(有/无 Retry-After)/500/400/ConnectException/SocketTimeout/其他异常 全部分类正确。
 
-- [ ] 测试 → 实现 → Commit: `feat: delivery result classification`
+- [x] 测试 → 实现 → Commit: `feat: delivery result classification`
 
 ### Task 6: Repository 接口 + JPA 持久化
 
@@ -355,7 +355,7 @@ notification:
 
 **测试:** `@DataJpaTest`：save/find 往返、acquireLock 成功与二次失败、未来 nextRetryAt 不可领取、stale SENDING 查询、幂等表唯一约束与 updateStatus、vendor config headers JSON 往返。
 
-- [ ] 接口定义 → 测试 → 实现 → Commit: `feat: persistence layer with lease-lock CAS`
+- [x] 接口定义 → 测试 → 实现 → Commit: `feat: persistence layer with lease-lock CAS`
 
 ### Task 7: IdempotencyService
 
@@ -363,7 +363,7 @@ notification:
 
 **测试要点:** 四种分支（新受理 202 语义、SUCCESS 重复、处理中重复、DLQ 409 语义）；两表同写调用次序。
 
-- [ ] 测试 → 实现 → Commit: `feat: idempotency service`
+- [x] 测试 → 实现 → Commit: `feat: idempotency service`
 
 ### Task 8: 受理用例 + Notification API
 
@@ -371,7 +371,7 @@ notification:
 
 **测试:** `@WebMvcTest`：新通知 202、重复 200、DLQ 409、缺 idempotencyKey 400、未知 vendorKey 400、GET 查询 200/404。
 
-- [ ] 测试 → 实现 → Commit: `feat: notification accept api`
+- [x] 测试 → 实现 → Commit: `feat: notification accept api`
 
 ### Task 9: VendorRequestAssembler
 
@@ -379,7 +379,7 @@ notification:
 
 **测试要点:** body/header 占位符替换、缺失字段→空串+WARN、idempotencyKey/requestId 注入、HEADER 模式写 header、BODY 模式仅模板内替换。
 
-- [ ] 测试 → 实现 → Commit: `feat: vendor request assembler`
+- [x] 测试 → 实现 → Commit: `feat: vendor request assembler`
 
 ### Task 10: HttpClientAdapter
 
@@ -389,7 +389,7 @@ notification:
 
 **测试:** 200→response；500→response（不抛）；connection refused→failure；延迟响应超 timeout→failure(SocketTimeoutException)。
 
-- [ ] 测试 → 实现 → Commit: `feat: http client adapter`
+- [x] 测试 → 实现 → Commit: `feat: http client adapter`
 
 ### Task 11: RateLimiter + VendorCircuitBreaker + VendorConfigCache
 
@@ -401,7 +401,7 @@ notification:
 
 **测试:** qps=2/burst=2 第三次拒绝；AUTO 连续失败达阈值后拒绝、冷却后可探测；FORCE_OPEN/FORCE_CLOSED 行为。
 
-- [ ] 测试 → 实现 → Commit: `feat: rate limiter and circuit breaker`
+- [x] 测试 → 实现 → Commit: `feat: rate limiter and circuit breaker`
 
 ### Task 12: AlertService + Metrics
 
@@ -413,8 +413,8 @@ notification:
 - **告警收敛**：同一事件类型 + vendor 在冷却窗口（默认 5min，可配置）内只发送一次；
 - 结构化日志事件类型：`NOTIFICATION_ACCEPTED` / `NOTIFICATION_DELIVERED` / `NOTIFICATION_DEAD_LETTERED`（SLF4J + MDC 含 requestId/vendorKey/idempotencyKey）。
 
-- [ ] WireMock 验证 webhook POST；空 URL 路径不抛异常；收敛窗口内重复事件只发一次
-- [ ] Commit: `feat: async webhook alert and metrics`
+- [x] WireMock 验证 webhook POST；空 URL 路径不抛异常；收敛窗口内重复事件只发一次
+- [x] Commit: `feat: async webhook alert and metrics`
 
 ### Task 13: DeliveryAppService
 
@@ -422,7 +422,7 @@ notification:
 
 **测试要点（mock 各协作者）:** 成功路径（SUCCESS+幂等同步+cb.onSuccess）、可重试失败（FAILED+attempt+1+nextRetryAt）、达上限进 DLQ（+幂等 DLQ+alert）、不可重试直接 DLQ、限流 reschedule（attempt 不变）、熔断 reschedule、acquireLock 失败直接返回 false。
 
-- [ ] 测试 → 实现 → Commit: `feat: delivery orchestration service`
+- [x] 测试 → 实现 → Commit: `feat: delivery orchestration service`
 
 ### Task 14: Scheduler + 锁超时恢复
 
@@ -430,7 +430,7 @@ notification:
 
 **测试（@SpringBootTest，scheduling 关闭，直接调 poll/recover 方法）:** 种 PENDING 记录 + WireMock 200 vendor → poll() 后 SUCCESS；种锁过期的 SENDING → recoverStale() 后 FAILED 且 attempt=1。
 
-- [ ] 测试 → 实现 → Commit: `feat: delivery scheduler and stale lock recovery`
+- [x] 测试 → 实现 → Commit: `feat: delivery scheduler and stale lock recovery`
 
 ### Task 15: Admin APIs
 
@@ -441,7 +441,7 @@ notification:
 
 **测试:** vendor config CRUD（创建/查询/更新后缓存刷新/删除）；dry-run 预览返回渲染结果且不发 HTTP；DLQ 重放 200/404/409。
 
-- [ ] 测试 → 实现 → Commit: `feat: admin apis for dlq replay and vendor config`
+- [x] 测试 → 实现 → Commit: `feat: admin apis for dlq replay and vendor config`
 
 ### Task 16: E2E 集成测试
 
@@ -454,8 +454,8 @@ notification:
 4. vendor 400 → 进 DLQ → admin replay →（WireMock 改 200）→ SUCCESS
 5. vendor 429 + Retry-After → 遵守后再成功
 
-- [ ] 场景 1-5 全部通过
-- [ ] Commit: `test: end-to-end notification flow`
+- [x] 场景 1-5 全部通过
+- [x] Commit: `test: end-to-end notification flow`
 
 ### Task 17: 交付物完善
 
@@ -468,11 +468,11 @@ notification:
 
 **ai-usage.md 必含:** AI 帮助点、未采纳建议、人工决策（含 FAILED→PENDING 合并一跳、Resilience4j 封装 FORCE 模式等实现偏离）。
 
-- [ ] docker-compose + postgres profile，手动验证 `docker compose up` + `--spring.profiles.active=postgres` 启动成功（需本机 Docker；无 Docker 则跳过并在 README 注明）
-- [ ] README.md
-- [ ] docs/ai-usage.md
-- [ ] OpenSpec 校验：`openspec validate --change notification-gateway-mvp`（若本机有 openspec CLI；无则跳过并记录）
-- [ ] Commit: `docs: readme, docker compose and ai usage notes`
+- [x] docker-compose + postgres profile，手动验证 `docker compose up` + `--spring.profiles.active=postgres` 启动成功（需本机 Docker；无 Docker 则跳过并在 README 注明）
+- [x] README.md
+- [x] docs/ai-usage.md
+- [x] OpenSpec 校验：`openspec validate --change notification-gateway-mvp`（若本机有 openspec CLI；无则跳过并记录）
+- [x] Commit: `docs: readme, docker compose and ai usage notes`
 
 ---
 
