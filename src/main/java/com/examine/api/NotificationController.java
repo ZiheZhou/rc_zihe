@@ -8,6 +8,7 @@ import com.examine.application.NotificationAcceptAppService;
 import com.examine.application.NotificationNotFoundException;
 import com.examine.domain.model.AcceptResult;
 import com.examine.domain.model.Status;
+import com.examine.domain.repository.DeliveryAttemptRepository;
 import com.examine.domain.repository.NotificationRequestRepository;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -25,11 +26,14 @@ public class NotificationController {
 
     private final NotificationAcceptAppService acceptAppService;
     private final NotificationRequestRepository requestRepository;
+    private final DeliveryAttemptRepository attemptRepository;
 
     public NotificationController(NotificationAcceptAppService acceptAppService,
-                                  NotificationRequestRepository requestRepository) {
+                                  NotificationRequestRepository requestRepository,
+                                  DeliveryAttemptRepository attemptRepository) {
         this.acceptAppService = acceptAppService;
         this.requestRepository = requestRepository;
+        this.attemptRepository = attemptRepository;
     }
 
     @PostMapping
@@ -47,13 +51,18 @@ public class NotificationController {
                             .body(new ErrorResponse("ALREADY_DEAD_LETTERED",
                                     "idempotencyKey already delivered to dead letter, requestId="
                                             + deadLettered.requestId() + "; use admin replay"));
+            case AcceptResult.Conflict conflict ->
+                    ResponseEntity.status(HttpStatus.CONFLICT)
+                            .body(new ErrorResponse("IDEMPOTENCY_KEY_CONFLICT",
+                                    conflict.message()));
         };
     }
 
     @GetMapping("/{requestId}")
     public NotificationStatusResponse getById(@PathVariable String requestId) {
         return requestRepository.findById(requestId)
-                .map(NotificationStatusResponse::from)
+                .map(r -> NotificationStatusResponse.from(
+                        r, attemptRepository.findByNotificationId(requestId)))
                 .orElseThrow(() -> new NotificationNotFoundException(requestId));
     }
 }

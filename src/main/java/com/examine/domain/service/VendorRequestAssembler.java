@@ -22,7 +22,8 @@ public class VendorRequestAssembler {
     private static final Logger log = LoggerFactory.getLogger(VendorRequestAssembler.class);
 
     public VendorHttpRequest assemble(String requestId, String idempotencyKey,
-                                      Map<String, Object> payload, VendorConfig config) {
+                                      Map<String, Object> payload, VendorConfig config,
+                                      int attemptCount) {
         Map<String, String> values = new HashMap<>();
         payload.forEach((k, v) -> values.put(k, v == null ? "" : String.valueOf(v)));
         values.put("idempotencyKey", idempotencyKey);
@@ -37,8 +38,18 @@ public class VendorRequestAssembler {
         if (config.idempotencyKeyLocation() == IdempotencyKeyLocation.HEADER) {
             headers.put(config.idempotencyKeyName(), idempotencyKey);
         }
+        putGatewayHeader(headers, "X-Notification-Id", requestId);
+        putGatewayHeader(headers, "X-Notification-Attempt", String.valueOf(attemptCount));
 
         return new VendorHttpRequest(config.endpoint(), config.method(), headers, body, config.timeout());
+    }
+
+    private void putGatewayHeader(Map<String, String> headers, String name, String value) {
+        String existing = headers.putIfAbsent(name, value);
+        if (existing != null) {
+            log.warn("gateway header '{}' conflicts with vendor-configured value '{}'; vendor value preserved",
+                    name, existing);
+        }
     }
 
     private static final class EmptyOnMissingLookup implements StringLookup {

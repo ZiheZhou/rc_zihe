@@ -72,6 +72,6 @@ public class VendorConfigAppService {
     public VendorHttpRequest preview(String vendorKey, Map<String, Object> payload) {
         VendorConfig config = repository.findByKey(vendorKey)
                 .orElseThrow(() -> new VendorConfigNotFoundException(vendorKey));
-        return assembler.assemble("preview-request-id", "preview-idempotency-key", payload, config);
+        return assembler.assemble("preview-request-id", "preview-idempotency-key", payload, config, 1);
     }
 }

@@ -41,7 +41,7 @@ class VendorRequestAssemblerTest {
                 IdempotencyKeyLocation.HEADER, Map.of());
 
         VendorHttpRequest request = assembler.assemble("req-1", "idem-1",
-                Map.of("userId", "u1", "msg", "hello"), config);
+                Map.of("userId", "u1", "msg", "hello"), config, 1);
 
         assertEquals("https://api.vendor-a.com/notify", request.url());
         assertEquals(HttpMethod.POST, request.method());
@@ -55,7 +55,7 @@ class VendorRequestAssemblerTest {
                 IdempotencyKeyLocation.HEADER, Map.of());
 
         VendorHttpRequest request = assembler.assemble("req-1", "idem-1",
-                Map.of("userId", "u1"), config);
+                Map.of("userId", "u1"), config, 1);
 
         assertEquals("{\"user\":\"u1\",\"msg\":\"\"}", request.body());
     }
@@ -66,7 +66,7 @@ class VendorRequestAssemblerTest {
                 IdempotencyKeyLocation.HEADER, Map.of("Authorization", "Bearer token"));
 
         VendorHttpRequest request = assembler.assemble("req-1", "idem-1",
-                Map.of("msg", "hi"), config);
+                Map.of("msg", "hi"), config, 1);
 
         assertEquals("idem-1", request.headers().get("Idempotency-Key"));
         assertEquals("Bearer token", request.headers().get("Authorization"));
@@ -78,7 +78,7 @@ class VendorRequestAssemblerTest {
                 IdempotencyKeyLocation.BODY, Map.of("Authorization", "Bearer token"));
 
         VendorHttpRequest request = assembler.assemble("req-1", "idem-1",
-                Map.of("msg", "hi"), config);
+                Map.of("msg", "hi"), config, 1);
 
         assertEquals("{\"key\":\"idem-1\",\"req\":\"req-1\"}", request.body());
         assertFalse(request.headers().containsKey("Idempotency-Key"));
@@ -91,7 +91,7 @@ class VendorRequestAssemblerTest {
         VendorConfig config = config("{}", IdempotencyKeyLocation.HEADER, headers);
 
         VendorHttpRequest request = assembler.assemble("req-1", "idem-1",
-                Map.of("tenant", "t-42"), config);
+                Map.of("tenant", "t-42"), config, 1);
 
         assertEquals("t-42", request.headers().get("X-Tenant"));
     }
@@ -100,7 +100,7 @@ class VendorRequestAssemblerTest {
     void nullBodyTemplateProducesNullBody() {
         VendorConfig config = config(null, IdempotencyKeyLocation.HEADER, Map.of());
 
-        VendorHttpRequest request = assembler.assemble("req-1", "idem-1", Map.of(), config);
+        VendorHttpRequest request = assembler.assemble("req-1", "idem-1", Map.of(), config, 1);
 
         assertNull(request.body());
     }

@@ -33,8 +33,13 @@ public class NotificationRequestRepositoryImpl implements NotificationRequestRep
     @Override
     @Transactional
     public NotificationRequest update(NotificationRequest request) {
-        NotificationRequestEntity entity = mappers.toEntity(request);
-        return mappers.toDomain(jpaRepository.save(entity));
+        NotificationRequestEntity existing = jpaRepository.findById(request.getId())
+                .orElseThrow(() -> new IllegalStateException(
+                        "Notification request not found during update: " + request.getId()));
+        mappers.mergeToEntity(request, existing);
+        // dirty checking flushes the UPDATE at commit time;
+        // @Version column is inherited from the managed entity and included in the WHERE clause
+        return mappers.toDomain(existing);
     }
 
     @Override

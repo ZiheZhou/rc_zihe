@@ -11,8 +11,12 @@ CREATE TABLE IF NOT EXISTS notification_request (
     delivered_at TIMESTAMP,
     last_error VARCHAR(1024),
     created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    version BIGINT DEFAULT 0
 );
+
+-- Backward-compatible: add version column for JPA @Version optimistic locking
+ALTER TABLE notification_request ADD COLUMN IF NOT EXISTS version BIGINT DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_notification_request_status_retry_lock
     ON notification_request (status, next_retry_at, locked_until);
@@ -55,3 +59,18 @@ CREATE TABLE IF NOT EXISTS vendor_config (
 
 CREATE INDEX IF NOT EXISTS idx_vendor_config_vendor_key
     ON vendor_config (vendor_key);
+
+CREATE TABLE IF NOT EXISTS delivery_attempt (
+    id VARCHAR(36) PRIMARY KEY,
+    notification_id VARCHAR(36) NOT NULL,
+    attempt_number INT NOT NULL,
+    status_code INT,
+    error VARCHAR(1024),
+    duration_ms BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    CONSTRAINT fk_delivery_attempt_notification
+        FOREIGN KEY (notification_id) REFERENCES notification_request(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_attempt_notification
+    ON delivery_attempt (notification_id, attempt_number);

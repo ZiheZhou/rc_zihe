@@ -10,6 +10,8 @@ import com.examine.domain.policy.DeliveryResultClassifier;
 import com.examine.domain.policy.EqualJitterStrategy;
 import com.examine.domain.policy.ExponentialBackoffRetryPolicy;
 import com.examine.domain.policy.RetryPolicy;
+import com.examine.domain.model.DeliveryAttempt;
+import com.examine.domain.repository.DeliveryAttemptRepository;
 import com.examine.domain.repository.IdempotencyRecordRepository;
 import com.examine.domain.repository.NotificationRequestRepository;
 import com.examine.domain.service.AlertService;
@@ -25,6 +27,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -51,6 +54,7 @@ public class DeliveryAppService {
 
     private final NotificationRequestRepository requestRepository;
     private final IdempotencyRecordRepository idempotencyRepository;
+    private final DeliveryAttemptRepository attemptRepository;
     private final VendorConfigCache configCache;
     private final RateLimiter rateLimiter;
     private final VendorCircuitBreaker circuitBreaker;
@@ -67,6 +71,7 @@ public class DeliveryAppService {
 
     public DeliveryAppService(NotificationRequestRepository requestRepository,
                               IdempotencyRecordRepository idempotencyRepository,
+                              DeliveryAttemptRepository attemptRepository,
                               VendorConfigCache configCache,
                               RateLimiter rateLimiter,
                               VendorCircuitBreaker circuitBreaker,
@@ -81,6 +86,7 @@ public class DeliveryAppService {
                               @Value("${notification.lease-duration-ms:60000}") long leaseDurationMs) {
         this.requestRepository = requestRepository;
         this.idempotencyRepository = idempotencyRepository;
+        this.attemptRepository = attemptRepository;
         this.configCache = configCache;
         this.rateLimiter = rateLimiter;
         this.circuitBreaker = circuitBreaker;
@@ -129,31 +135,44 @@ public class DeliveryAppService {
         }
 
         // HTTP 调用在事务外
+        int attemptCount = request.getAttemptCount() + 1;
         VendorHttpRequest vendorRequest = assembler.assemble(
-                request.getId(), request.getIdempotencyKey(), parsePayload(request.getPayload()), config);
+                request.getId(), request.getIdempotencyKey(), parsePayload(request.getPayload()), config, attemptCount);
         HttpOutcome outcome = httpClient.send(vendorRequest);
         DeliveryResult result = classifier.classify(outcome);
 
-        switch (result) {
-            case DeliveryResult.Success success -> persistSuccess(request);
-            case DeliveryResult.RateLimited rateLimited ->
-                    persistRetryOrDeadLetter(request, config, rateLimited.retryAfter(),
-                            "vendor rate limited (429)");
-            case DeliveryResult.RetryableFailure failure ->
-                    persistRetryOrDeadLetter(request, config, failure.retryAfter(), failure.reason());
-            case DeliveryResult.NonRetryableFailure failure -> {
-                circuitBreaker.onFailure(vendorKey);
-                persistDeadLetter(request, failure.reason());
+        recordAttempt(request.getId(), attemptCount, outcome);
+
+        try {
+            switch (result) {
+                case DeliveryResult.Success success -> persistSuccess(request);
+                case DeliveryResult.RateLimited rateLimited ->
+                        persistRetryOrDeadLetter(request, config, rateLimited.retryAfter(),
+                                "vendor rate limited (429)");
+                case DeliveryResult.RetryableFailure failure ->
+                        persistRetryOrDeadLetter(request, config, failure.retryAfter(), failure.reason());
+                case DeliveryResult.NonRetryableFailure failure -> {
+                    circuitBreaker.onFailure(vendorKey);
+                    persistDeadLetter(request, failure.reason());
+                }
             }
+        } catch (OptimisticLockingFailureException e) {
+            log.info("write-back ignored for request {}: lock was recovered concurrently by stale-lock recovery",
+                    requestId);
         }
         return true;
     }
 
     private void reschedule(NotificationRequest request, Instant nextRetryAt, String reason) {
-        txTemplate.executeWithoutResult(tx -> {
-            request.reschedule(nextRetryAt, clock.instant());
-            requestRepository.update(request);
-        });
+        try {
+            txTemplate.executeWithoutResult(tx -> {
+                request.reschedule(nextRetryAt, clock.instant());
+                requestRepository.update(request);
+            });
+        } catch (OptimisticLockingFailureException e) {
+            log.info("reschedule skipped for request {}: concurrent stale-lock recovery won the race", request.getId());
+            return;
+        }
         log.debug("request {} rescheduled to {} ({})", request.getId(), nextRetryAt, reason);
     }
 
@@ -200,6 +219,14 @@ public class DeliveryAppService {
         metrics.incrementDeadLettered();
         logEvent("NOTIFICATION_DEAD_LETTERED", request, reason);
         alertService.notifyDeadLetter(request.getId(), request.getVendorKey(), reason);
+    }
+
+    private void recordAttempt(String notificationId, int attemptNumber, HttpOutcome outcome) {
+        String error = outcome.error() != null ? outcome.error().getMessage() : null;
+        DeliveryAttempt attempt = DeliveryAttempt.create(
+                UUID.randomUUID().toString(), notificationId, attemptNumber,
+                outcome.statusCode(), error, outcome.durationMs(), clock.instant());
+        attemptRepository.save(attempt);
     }
 
     private Map<String, Object> parsePayload(String payload) {

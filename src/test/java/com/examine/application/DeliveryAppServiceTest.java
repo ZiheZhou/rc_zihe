@@ -12,6 +12,7 @@ import com.examine.domain.model.config.RateLimitSettings;
 import com.examine.domain.model.config.RetryPolicySettings;
 import com.examine.domain.model.config.VendorConfig;
 import com.examine.domain.policy.DeliveryResultClassifier;
+import com.examine.domain.repository.DeliveryAttemptRepository;
 import com.examine.domain.repository.IdempotencyRecordRepository;
 import com.examine.domain.repository.NotificationRequestRepository;
 import com.examine.domain.service.AlertService;
@@ -48,6 +49,7 @@ class DeliveryAppServiceTest {
 
     @Mock NotificationRequestRepository requestRepository;
     @Mock IdempotencyRecordRepository idempotencyRepository;
+    @Mock DeliveryAttemptRepository attemptRepository;
     @Mock VendorConfigCache configCache;
     @Mock RateLimiter rateLimiter;
     @Mock VendorCircuitBreaker circuitBreaker;
@@ -62,7 +64,8 @@ class DeliveryAppServiceTest {
         PlatformTransactionManager txManager = mock(PlatformTransactionManager.class);
         lenient().when(txManager.getTransaction(any())).thenReturn(mock(TransactionStatus.class));
         service = new DeliveryAppService(
-                requestRepository, idempotencyRepository, configCache, rateLimiter, circuitBreaker,
+                requestRepository, idempotencyRepository, attemptRepository,
+                configCache, rateLimiter, circuitBreaker,
                 new VendorRequestAssembler(), httpClient, new DeliveryResultClassifier(),
                 alertService, metrics, new ObjectMapper(),
                 Clock.fixed(NOW, ZoneOffset.UTC),
@@ -92,7 +95,7 @@ class DeliveryAppServiceTest {
     void successMarksDeliveredAndSyncsIdempotencyAndCircuitBreaker() {
         NotificationRequest request = NotificationRequest.create("req-1", "vendor-a", "idem-1", "{\"msg\":\"hi\"}", NOW);
         arrangeReachHttp(request, configWithMaxAttempts(10));
-        when(httpClient.send(any())).thenReturn(HttpOutcome.response(200, Map.of()));
+        when(httpClient.send(any())).thenReturn(HttpOutcome.response(200, Map.of(), 0L));
 
         assertTrue(service.tryDispatch("req-1"));
 
@@ -109,7 +112,7 @@ class DeliveryAppServiceTest {
     void retryableFailureSchedulesNextRetryWithAttemptIncremented() {
         NotificationRequest request = NotificationRequest.create("req-1", "vendor-a", "idem-1", "{}", NOW);
         arrangeReachHttp(request, configWithMaxAttempts(10));
-        when(httpClient.send(any())).thenReturn(HttpOutcome.response(500, Map.of()));
+        when(httpClient.send(any())).thenReturn(HttpOutcome.response(500, Map.of(), 0L));
 
         assertTrue(service.tryDispatch("req-1"));
 
@@ -127,7 +130,7 @@ class DeliveryAppServiceTest {
         NotificationRequest request = NotificationRequest.restore("req-1", "vendor-a", "idem-1", "{}",
                 Status.PENDING, 2, NOW, null, NotificationRequest.UNLOCKED, NOW, NOW, null, null);
         arrangeReachHttp(request, configWithMaxAttempts(3));
-        when(httpClient.send(any())).thenReturn(HttpOutcome.response(500, Map.of()));
+        when(httpClient.send(any())).thenReturn(HttpOutcome.response(500, Map.of(), 0L));
 
         assertTrue(service.tryDispatch("req-1"));
 
@@ -142,7 +145,7 @@ class DeliveryAppServiceTest {
     void nonRetryableFailureGoesStraightToDeadLetter() {
         NotificationRequest request = NotificationRequest.create("req-1", "vendor-a", "idem-1", "{}", NOW);
         arrangeReachHttp(request, configWithMaxAttempts(10));
-        when(httpClient.send(any())).thenReturn(HttpOutcome.response(400, Map.of()));
+        when(httpClient.send(any())).thenReturn(HttpOutcome.response(400, Map.of(), 0L));
 
         assertTrue(service.tryDispatch("req-1"));
 
@@ -156,7 +159,7 @@ class DeliveryAppServiceTest {
     void rateLimitedUsesRetryAfterHint() {
         NotificationRequest request = NotificationRequest.create("req-1", "vendor-a", "idem-1", "{}", NOW);
         arrangeReachHttp(request, configWithMaxAttempts(10));
-        when(httpClient.send(any())).thenReturn(HttpOutcome.response(429, Map.of("retry-after", "30")));
+        when(httpClient.send(any())).thenReturn(HttpOutcome.response(429, Map.of("retry-after", "30"), 0L));
 
         assertTrue(service.tryDispatch("req-1"));
 

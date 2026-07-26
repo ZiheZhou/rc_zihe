@@ -145,24 +145,17 @@ api ────────▶ application ────────▶ domain �
 
 **未选方案**：Kafka/MetaQ 引入运维成本，单实例作业不需要；但其高吞吐、低延迟优势在流量显著增长后会成为演进方向。
 
-### 4.3 分布式锁：DB 租约锁（CAS UPDATE）
+### 4.3 分布式锁：DB 租约锁（CAS UPDATE）+ @Version 乐观锁
 
-**决策**：使用数据库 CAS UPDATE 实现租约锁，而非 Redis 分布式锁。
+**决策**：获取锁用 CAS UPDATE（status 守卫），写回用 JPA `@Version` 乐观锁（version 守卫）。
 
-**原因**：
-- 少一个中间件依赖
-- 租约 + 锁超时恢复已覆盖 Worker 崩溃场景
-- CAS UPDATE 对单实例足够；多实例场景下数据库行锁同样有效
+**双层保护**：
+- **获取锁**：CAS UPDATE `WHERE status IN ('PENDING', 'FAILED')` —— 防止多 Worker 抢同一条记录
+- **写回**：`@Version` 乐观锁 —— `UPDATE WHERE version = ?` —— 防止 Worker 的写回覆盖 StaleLockRecovery 的并发恢复（或反过来）
 
-**实现**：
-```sql
-UPDATE notification_request
-SET status = 'SENDING', locked_by = :workerId,
-    locked_until = :now + leaseDuration
-WHERE id = :id AND status IN ('PENDING', 'FAILED')
-  AND next_retry_at <= :now AND locked_until <= :now
-```
-Worker 崩溃后锁自然过期（默认 60s），其他 Worker 可接管。
+**实现细节**：`NotificationRequestRepositoryImpl.update()` 使用 `findById` 预加载 managed entity（带 DB 当前 version），再通过 `mergeToEntity()` 复制域字段，依赖 JPA dirty checking 在 flush 时自动携带版本号。如果中间有并发修改导致版本号变化，Hibernate 抛出 `OptimisticLockingFailureException`，调用方捕获后记录 INFO 日志并跳过——这正是"写回被忽略"的信号。
+
+**为什么不用 Redis**：少一个中间件依赖。CAS UPDATE + @Version 对单实例足够；多实例场景下同样有效（DB 行锁 + version 保证）。
 
 ### 4.4 幂等设计：双层幂等
 
@@ -179,15 +172,18 @@ Worker 崩溃后锁自然过期（默认 60s），其他 Worker 可接管。
 
 **DLQ 重复提交处理**：若原通知已在 DLQ，业务方用同一 key 再次提交 → 返回 409，要求走人工重放 API。
 
-**受理时的四分支判断**：业务方提交 `(vendorKey, idempotencyKey, payload)` 后，系统按以下决策树处理：
+**受理时的五分支判断**：业务方提交 `(vendorKey, idempotencyKey, payload)` 后，系统按以下决策树处理：
 
 ```text
 查询 IdempotencyRecord(vendorKey, idempotencyKey)
   ├── 不存在 → 创建 NotificationRequest + IdempotencyRecord → 返回 202
+  ├── 存在，且 payload 不一致 → 返回 409 Conflict（调用方 bug：同 key 不同内容）
   ├── 状态 = SUCCESS → 返回 200 + 原 requestId（不重复投递）
   ├── 状态 = PENDING/FAILED → 返回 200 + 当前状态（不创建新记录）
   └── 状态 = DEAD_LETTERED → 返回 409（拒绝自动重试，要求人工重放）
 ```
+
+> **为什么同 key 不同 payload 要返回 409？** 如果调用方把 `user-123` 的幂等键错误复用在 `user-456` 的通知上，静默返回 200 会让 bug 永远不被发现。409 让配置错误在测试环境就暴露。
 
 > **为什么 DEAD_LETTERED 要返回 409 而不是自动重试？** 进入 DLQ 的通知已经过最大重试次数仍未成功，说明存在系统性问题（如 vendor 接口变更、认证失效）。自动重试只会浪费资源并再次进入 DLQ，应人工确认问题已修复后再重放。
 
@@ -240,8 +236,12 @@ Worker 获取租约锁后进入 SENDING 状态进行 HTTP 投递。如果 Worker
 
 1. 该记录的 `lockedUntil` 不会被动释放——只能等待自然过期（默认 60s）
 2. 独立的 `StaleLockRecoveryAppService` 定时扫描 `status=SENDING AND lockedUntil <= now` 的记录
-3. 将这些记录视为一次失败尝试：`attemptCount += 1`，计算 `nextRetryAt`，释放锁
-4. 若已超过最大重试次数，直接进入 DLQ
+3. 调用 `releaseStaleLock()`：重置为 PENDING，清除 `lastError`，**不修改 attemptCount**
+4. 逃生门：如果通知创建时间超过 `maxStaleAge`（默认 24h），直接标记为 DEAD_LETTERED —— 防止 Worker 反复崩溃导致的无限重试循环
+
+**为什么不递增 attemptCount**：崩溃 Worker 发出的 HTTP 请求结果是不确定的——vendor 可能已处理并返回 200（只是响应在途中丢失），也可能从未收到。把它计为一次"失败尝试"语义上不准确，且浪费重试预算。真实投递结果由下一个成功完成 HTTP 调用的 Worker 来记录。
+
+**@Version 并发保护**：恢复操作和 Worker 的写回可能同时修改同一条记录。`@Version` 乐观锁保证后写的一方收到 `OptimisticLockingFailureException`（记录 INFO 日志后跳过），而非覆盖彼此的更新。
 
 > **为什么选择"等待过期"而非"心跳检测"？** 心跳检测需要在 Worker 和记录之间维持活跃连接，增加实现复杂度和 DB 写入压力。租约过期是"惰性恢复"——Worker 崩溃后最多损失一个租约周期（60s）的投递时效，这个代价对于异步通知场景可以接受。租约时长设计为 HTTP 超时（30s）+ 处理时间（5s）+ 缓冲（25s）= 60s。
 
@@ -289,6 +289,34 @@ Worker 获取租约锁后进入 SENDING 状态进行 HTTP 投递。如果 Worker
 
 **告警通道取舍**：MVP 只配一个全局 Webhook URL；若 URL 未配置，降级为 ERROR 级别日志。不引入 per-vendor 告警渠道——vendor 数量少时，全局 Webhook + 日志兜底足够；per-vendor 渠道在 vendor 数量超过两位数且需要差异化通知时再引入。
 
+### 4.12 投递尝试历史：delivery_attempts 独立表
+
+**决策**：新增 `delivery_attempt` 表，记录每次 HTTP 调用的 attempt 序号、状态码、错误信息、耗时。与 `notification_request` 通过 FK（ON DELETE CASCADE）关联。
+
+**原因**：
+- 运维排查需要回答"第 N 次尝试返回了什么状态码、耗时多少"——仅靠 `lastError` 无法回答
+- 独立表保持与 notification_request 不同的生命周期和查询模式
+- 每次投递后同步写入（独立事务），即使后续状态更新因乐观锁冲突被跳过，attempt 记录仍保留——HTTP 调用已是历史事实
+
+**暴露方式**：`GET /api/v1/notifications/{id}` 响应中包含 `attempts` 数组（`AttemptSummary`：次数、状态码、错误、耗时、时间）。
+
+### 4.13 X-Notification Headers：透传投递元数据
+
+**决策**：每次投递请求携带两个自定义 header：
+
+| Header | 值 | 用途 |
+|--------|---|------|
+| `X-Notification-Id` | requestId（跨重试稳定） | Vendor 侧幂等去重 |
+| `X-Notification-Attempt` | 当前尝试次数（1-based） | Vendor 侧区分首次投递和重试 |
+
+**Vendor header 冲突保护**：使用 `putIfAbsent` 而非 `put`，确保 vendor 自己配置的同名 header 不会被覆盖。如果冲突，记录 WARN 日志。
+
+### 4.14 Payload 大小限制
+
+**决策**：`notification.max-payload-bytes` 配置项（默认 256 KiB），超限返回 413 Payload Too Large。
+
+**原因**：恶意或 buggy 的超大 payload 可能撑爆 DB LOB 列、在模板渲染时 OOM、在每次重试时重复加载。这是一个极低成本的安全兜底。
+
 ---
 
 ## 5. 可靠性与失败处理策略
@@ -300,11 +328,14 @@ Worker 获取租约锁后进入 SENDING 状态进行 HTTP 投递。如果 Worker
 | Vendor 返回 429 | 可重试，优先尊重 `Retry-After`，否则按退避策略 |
 | Vendor 返回 4xx（除 429） | 不可重试，直接进 DLQ |
 | Vendor 长期不可用 | 熔断打开，新通知暂存不投递，恢复期后自动 HALF_OPEN 探测 |
-| Worker 崩溃 | 租约锁过期后（60s），其他 Worker 自动接管 |
+| Worker 崩溃 | 租约锁过期后 releaseStaleLock → PENDING；@Version 防并发覆盖 |
+| Worker 反复崩溃（无限循环） | maxStaleAge（默认 24h）超限 → DEAD_LETTERED |
 | 服务重启 | Scheduler 无状态，重启后自动扫描 PENDING/FAILED/SENDING（锁过期）记录 |
 | 超过最大重试次数 | 进入 DLQ，触发 Webhook 告警，等待人工重放 |
 | 重复提交（已 SUCCESS） | 返回 200 + 原 requestId，不重复投递 |
 | 重复提交（已在 DLQ） | 返回 409，拒绝自动重试，要求走人工重放 API |
+| 幂等键冲突（同 key 不同 payload） | 返回 409 Conflict，暴露调用方 bug |
+| Payload 超过大小上限 | 返回 413 Payload Too Large |
 | 告警发送失败 | 降级为 ERROR 级别日志 |
 
 ---
@@ -372,11 +403,12 @@ Worker 获取租约锁后进入 SENDING 状态进行 HTTP 投递。如果 Worker
 
 ### 7.2 MVP 的已知限制
 
-- **单实例设计**：限流桶和熔断器在内存中，多实例各自独立计数（但 DB 租约锁本身支持多实例）
+- **单实例设计**：限流桶和熔断器在内存中，多实例各自独立计数（但 DB 租约锁 + @Version 本身支持多实例）
 - **无优先队列**：所有通知按 `nextRetryAt` 公平调度
 - **告警单通道**：仅全局 Webhook，无值班路由 / 告警升级
 - **管理端无鉴权**：Admin API 假设在内网环境
 - **模板仅支持 Body 和 Header**：URL 不支持模板
+- **无 SSRF / 网络隔离**：假设内网可信环境。若 `target_url` 可能来自半可信方，应引入出口代理 + 域名白名单
 
 ### 7.3 未来演进路径
 
@@ -389,7 +421,18 @@ Worker 获取租约锁后进入 SENDING 状态进行 HTTP 投递。如果 Worker
 
 ---
 
-## 8. 快速开始
+## 8. 时间盒说明
+
+本作业分两轮迭代完成：
+
+- **第一轮（TDD 实现）**：按要求完成 MVP——109 个测试（单元/集成/E2E），覆盖核心投递链路、幂等去重、500 重试成功、400→DLQ→重放、429 Retry-After
+- **第二轮（评审修复）**：通过与其他实现的横向对比和两轮 Code Review，修复了 12 个问题（write-back guard、optimistic locking、StaleLock recovery 语义、idempotency conflict detection、delivery_attempts 审计表、header collision、payload 大小限制等）
+
+如果只有 4 小时：砍掉熔断、限流、告警；幂等用单表；不做 delivery_attempts；StaleLock recovery 用简单的 markFailed。但本次作业的目标是展示在 AI 辅助下能达到的工程完备度上限。
+
+---
+
+## 9. 快速开始
 
 ### 一键运行
 
@@ -401,6 +444,57 @@ Worker 获取租约锁后进入 SENDING 状态进行 HTTP 投递。如果 Worker
 
 ```bash
 ./mvnw test                     # 109 个测试（单元/集成/E2E）
+```
+
+### 演示场景
+
+以下脚本依赖 vendor-a 已通过上面的 curl 注册。
+
+**场景 1：成功投递**
+```bash
+curl -s -X POST localhost:8080/api/v1/notifications \
+  -H 'Content-Type: application/json' \
+  -d '{"vendorKey":"vendor-a","idempotencyKey":"demo-1","payload":{"userId":"u1","msg":"hello"}}'
+# → 202 {"requestId":"...","status":"PENDING"}
+
+sleep 2
+curl -s localhost:8080/api/v1/notifications/{requestId} | jq '.status, .attempts'
+# → "SUCCESS" + [{number:1, statusCode:200, durationMs:...}]
+```
+
+**场景 2：幂等去重**
+```bash
+# 同一 idempotencyKey 再次提交
+curl -s -X POST localhost:8080/api/v1/notifications \
+  -H 'Content-Type: application/json' \
+  -d '{"vendorKey":"vendor-a","idempotencyKey":"demo-1","payload":{"userId":"u1","msg":"hello"}}'
+# → 200 {"requestId":"<同上>","status":"SUCCESS"}
+
+# 同一 key 但不同 payload
+curl -s -X POST localhost:8080/api/v1/notifications \
+  -H 'Content-Type: application/json' \
+  -d '{"vendorKey":"vendor-a","idempotencyKey":"demo-1","payload":{"userId":"u2","msg":"other"}}'
+# → 409 {"code":"IDEMPOTENCY_KEY_CONFLICT",...}
+```
+
+**场景 3：DLQ 重放**
+```bash
+# 注册一个指向不存在端点的 vendor 来触发 DLQ
+curl -s -X POST localhost:8080/admin/v1/vendor-configs \
+  -H 'Content-Type: application/json' \
+  -d '{"vendorKey":"bad-vendor","endpoint":"http://localhost:1/notify","method":"POST",
+       "headers":{},"bodyTemplate":"{}","timeoutMs":2000,
+       "retryPolicy":{"maxAttempts":2,"baseDelayMs":1000,"maxDelayMs":3000},
+       "rateLimit":{"qps":100,"burst":200},
+       "circuitBreaker":{"mode":"AUTO","failureRateThreshold":50,"minCalls":5,"cooldownSeconds":30,"halfOpenMaxCalls":2},
+       "idempotencyKeyLocation":"HEADER","idempotencyKeyName":"Idempotency-Key"}'
+
+curl -s -X POST localhost:8080/api/v1/notifications \
+  -H 'Content-Type: application/json' \
+  -d '{"vendorKey":"bad-vendor","idempotencyKey":"dlq-demo","payload":{}}'
+# 等待重试耗尽 → 查询 DLQ 列表 → 修复 vendor 后重放
+curl -s localhost:8080/admin/v1/dead-letters
+curl -s -X POST localhost:8080/admin/v1/dead-letters/{requestId}/retry
 ```
 
 ### API 示例
@@ -454,9 +548,24 @@ docker compose up -d
 
 `/actuator/health`、`/actuator/metrics`（`notifications_received_total` / `delivered` / `dead_lettered` / `pending_depth` / `dlq_depth`）
 
+### 配置参考
+
+| 属性 | 默认值 | 说明 |
+|------|--------|------|
+| `notification.scheduling.enabled` | `true` | 是否启用投递调度 |
+| `notification.scheduler.fixed-delay-ms` | `2000` | 调度轮询间隔 |
+| `notification.scheduler.batch-size` | `100` | 每次拉取的最大记录数 |
+| `notification.worker.pool-size` | `10` | 投递 Worker 线程池大小 |
+| `notification.lease-duration-ms` | `60000` | 租约锁超时（应 ≥ 最长 HTTP timeout） |
+| `notification.max-payload-bytes` | `262144` | 通知 payload JSON 最大字节数 |
+| `notification.stale-lock-max-age-hours` | `24` | StaleLock 恢复最大存活时间（超限 dead-letter） |
+| `notification.alert.webhook-url` | （空） | 告警 Webhook URL（空 = 仅日志） |
+| `notification.alert.cooldown-seconds` | `300` | 同 `type+vendor` 告警冷却窗口 |
+| `notification.idempotency.retention-days` | `7` | 幂等记录保留天数 |
+
 ---
 
-## 9. 技术栈
+## 10. 技术栈
 
 | 层次 | 选型 | 说明 |
 |------|------|------|
@@ -473,7 +582,7 @@ docker compose up -d
 
 ---
 
-## 10. 项目结构
+## 11. 项目结构
 
 ```text
 src/main/java/com/examine/
@@ -498,18 +607,19 @@ src/main/java/com/examine/
 
 ---
 
-## 11. 文档索引
+## 12. 文档索引
 
 | 文档 | 内容 |
 |------|------|
 | [docs/design.md](docs/design.md) | 架构设计：问题理解、系统边界、关键决策的详细论证 |
 | [docs/technical-design.md](docs/technical-design.md) | 技术设计：分层、领域模型、状态机、API 契约、中间件取舍 |
 | [docs/ai-usage.md](docs/ai-usage.md) | AI 使用说明：协作方式、帮助最大的点、未采纳建议、人工决策 |
+| [docs/code-review-findings.md](docs/code-review-findings.md) | Code Review 发现记录：两轮共 20 个问题及修复状态 |
 | [openspec/changes/notification-gateway-mvp/](openspec/changes/notification-gateway-mvp/) | OpenSpec 变更提案与验收标准 |
 
 ---
 
-## 12. 测试覆盖
+## 13. 测试覆盖
 
 | 层级 | 框架 | 覆盖内容 |
 |------|------|---------|

@@ -92,6 +92,19 @@ public class NotificationRequest {
         releaseLock(now);
     }
 
+    /**
+     * Release a stale lock without modifying attemptCount.
+     * Called by StaleLockRecovery when a worker's lease has expired:
+     * the crashed worker's HTTP outcome is unknown, so we do not count it
+     * as a failed attempt — the next worker to acquire the lock will
+     * perform the actual retry and increment attemptCount on completion.
+     */
+    public void releaseStaleLock(Instant now) {
+        this.status = Status.PENDING;
+        this.lastError = null;
+        releaseLock(now);
+    }
+
     private void releaseLock(Instant now) {
         this.lockedBy = null;
         this.lockedUntil = UNLOCKED;

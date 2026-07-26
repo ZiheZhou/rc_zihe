@@ -1,31 +1,27 @@
 package com.examine.application;
 
-import com.examine.domain.model.IdempotencyStatus;
 import com.examine.domain.model.NotificationRequest;
-import com.examine.domain.model.config.VendorConfig;
-import com.examine.domain.policy.EqualJitterStrategy;
-import com.examine.domain.policy.ExponentialBackoffRetryPolicy;
-import com.examine.domain.policy.RetryPolicy;
-import com.examine.domain.repository.IdempotencyRecordRepository;
 import com.examine.domain.repository.NotificationRequestRepository;
-import com.examine.domain.service.AlertService;
-import com.examine.infrastructure.config.VendorConfigCache;
-import com.examine.infrastructure.metrics.NotificationMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
-import java.util.Optional;
-import java.util.Random;
 
 /**
- * 锁超时恢复（technical-design.md 8.1）：SENDING 且 lockedUntil 过期的记录
- * 视为投递失败一次（attemptCount+1，计算 nextRetryAt）；达上限进 DLQ + 告警。
- * 崩溃 worker 恢复后可能对同一记录二次投递，由 vendor 幂等键兜底。
+ * 锁超时恢复：SENDING 且 lockedUntil 过期的记录，释放锁并重置为 PENDING。
+ * <p>
+ * 不递增 attemptCount（崩溃 worker 的 HTTP 结果未知），不标记为失败。
+ * 下一个 worker 获取锁后执行实际重试，由投递路径完成 attempt 计数。
+ * <p>
+ * {@code @Version} 乐观锁保证恢复操作不与 worker 的并发写回冲突——
+ * 后写的一方抛出 OptimisticLockingFailureException，记录日志后跳过。
  */
 @Service
 public class StaleLockRecoveryAppService {
@@ -33,27 +29,18 @@ public class StaleLockRecoveryAppService {
     private static final Logger log = LoggerFactory.getLogger(StaleLockRecoveryAppService.class);
 
     private final NotificationRequestRepository requestRepository;
-    private final IdempotencyRecordRepository idempotencyRepository;
-    private final VendorConfigCache configCache;
-    private final AlertService alertService;
-    private final NotificationMetrics metrics;
     private final Clock clock;
     private final TransactionTemplate txTemplate;
+    private final Duration maxStaleAge;
 
     public StaleLockRecoveryAppService(NotificationRequestRepository requestRepository,
-                                       IdempotencyRecordRepository idempotencyRepository,
-                                       VendorConfigCache configCache,
-                                       AlertService alertService,
-                                       NotificationMetrics metrics,
                                        Clock clock,
-                                       PlatformTransactionManager txManager) {
+                                       PlatformTransactionManager txManager,
+                                       @Value("${notification.stale-lock-max-age-hours:24}") int maxStaleAgeHours) {
         this.requestRepository = requestRepository;
-        this.idempotencyRepository = idempotencyRepository;
-        this.configCache = configCache;
-        this.alertService = alertService;
-        this.metrics = metrics;
         this.clock = clock;
         this.txTemplate = new TransactionTemplate(txManager);
+        this.maxStaleAge = Duration.ofHours(maxStaleAgeHours);
     }
 
     public void recoverStale(int limit) {
@@ -61,6 +48,8 @@ public class StaleLockRecoveryAppService {
         for (NotificationRequest request : requestRepository.findStaleSendingRecords(now, limit)) {
             try {
                 recoverOne(request, now);
+            } catch (OptimisticLockingFailureException e) {
+                log.info("stale lock recovery skipped for request {}: worker write-back won the race", request.getId());
             } catch (Exception e) {
                 log.error("stale recovery failed for request {}", request.getId(), e);
             }
@@ -68,39 +57,21 @@ public class StaleLockRecoveryAppService {
     }
 
     private void recoverOne(NotificationRequest request, Instant now) {
-        String vendorKey = request.getVendorKey();
-        Optional<VendorConfig> config = configCache.get(vendorKey);
-        if (config.isEmpty()) {
-            deadLetter(request, now, "vendor config missing: " + vendorKey);
+        if (Duration.between(request.getCreatedAt(), now).compareTo(maxStaleAge) > 0) {
+            txTemplate.executeWithoutResult(tx -> {
+                request.markDeadLettered(
+                        "stale lock recovery max age exceeded (" + maxStaleAge.toHours() + "h)", now);
+                requestRepository.update(request);
+            });
+            log.error("stale lock recovery ESCAPE HATCH: request {} dead-lettered after exceeding max age {}h",
+                    request.getId(), maxStaleAge.toHours());
             return;
         }
-        RetryPolicy retryPolicy = new ExponentialBackoffRetryPolicy(
-                config.get().retryPolicy().baseDelay(), config.get().retryPolicy().maxDelay(),
-                config.get().retryPolicy().maxAttempts(), new EqualJitterStrategy(new Random()));
-        int nextAttempt = request.getAttemptCount() + 1;
-        if (!retryPolicy.allowRetry(nextAttempt)) {
-            deadLetter(request, now, "attempts exhausted (" + nextAttempt + ") after stale lock recovery");
-            return;
-        }
-        Instant nextRetryAt = retryPolicy.calculateNextRetry(nextAttempt, now, Optional.empty());
         txTemplate.executeWithoutResult(tx -> {
-            request.markFailed(nextRetryAt, "stale lock recovered (worker crash suspected)", now);
+            request.releaseStaleLock(now);
             requestRepository.update(request);
-            idempotencyRepository.updateStatus(vendorKey, request.getIdempotencyKey(), IdempotencyStatus.FAILED);
         });
-        metrics.incrementFailed();
-        log.warn("stale SENDING recovered: requestId={} attempt={} nextRetryAt={}",
-                request.getId(), nextAttempt, nextRetryAt);
-    }
-
-    private void deadLetter(NotificationRequest request, Instant now, String reason) {
-        txTemplate.executeWithoutResult(tx -> {
-            request.markDeadLettered(reason, now);
-            requestRepository.update(request);
-            idempotencyRepository.updateStatus(
-                    request.getVendorKey(), request.getIdempotencyKey(), IdempotencyStatus.DEAD_LETTERED);
-        });
-        metrics.incrementDeadLettered();
-        alertService.notifyDeadLetter(request.getId(), request.getVendorKey(), reason);
+        log.info("stale SENDING lock released for request {} (attempts preserved at {})",
+                request.getId(), request.getAttemptCount());
     }
 }

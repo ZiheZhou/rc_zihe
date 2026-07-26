@@ -79,7 +79,7 @@ class SchedulerIntegrationTest {
     }
 
     @Test
-    void recoverStaleMarksExpiredSendingAsFailed() {
+    void recoverStaleMarksExpiredSendingAsPending() {
         saveVendorConfig("vendor-it");
         Instant now = Instant.now();
         NotificationRequest request = NotificationRequest.create(
@@ -91,9 +91,11 @@ class SchedulerIntegrationTest {
         staleLockRecoveryAppService.recoverStale(10);
 
         NotificationRequest recovered = requestRepository.findById("req-it-2").orElseThrow();
-        assertEquals(Status.FAILED, recovered.getStatus());
-        assertEquals(1, recovered.getAttemptCount());
+        // StaleLockRecovery releases lock back to PENDING without incrementing attemptCount.
+        // The crashed worker's HTTP outcome is unknown, so counting it as a failure would
+        // waste retry budget for no reason.
+        assertEquals(Status.PENDING, recovered.getStatus());
+        assertEquals(0, recovered.getAttemptCount());
         assertEquals(NotificationRequest.UNLOCKED, recovered.getLockedUntil());
-        assertTrue(recovered.getNextRetryAt().isAfter(Instant.now().minusSeconds(1)));
     }
 }

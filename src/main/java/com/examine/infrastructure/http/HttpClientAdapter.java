@@ -35,15 +35,17 @@ public class HttpClientAdapter {
     }
 
     public HttpOutcome send(VendorHttpRequest request) {
+        long start = System.currentTimeMillis();
         try {
             HttpRequest httpRequest = buildRequest(request);
             HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-            return HttpOutcome.response(response.statusCode(), flattenHeaders(response));
+            long durationMs = System.currentTimeMillis() - start;
+            return HttpOutcome.response(response.statusCode(), flattenHeaders(response), durationMs);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return HttpOutcome.failure(e);
+            return HttpOutcome.failure(e, System.currentTimeMillis() - start);
         } catch (Exception e) {
-            return HttpOutcome.failure(e);
+            return HttpOutcome.failure(e, System.currentTimeMillis() - start);
         }
     }
 

@@ -2,6 +2,7 @@ package com.examine.api;
 
 import com.examine.api.dto.ErrorResponse;
 import com.examine.application.NotificationNotFoundException;
+import com.examine.application.PayloadTooLargeException;
 import com.examine.application.VendorConfigNotFoundException;
 import com.examine.application.VendorNotFoundException;
 import org.slf4j.Logger;
@@ -48,6 +49,12 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> illegalState(IllegalStateException e) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new ErrorResponse("CONFLICT", e.getMessage()));
+    }
+
+    @ExceptionHandler(PayloadTooLargeException.class)
+    public ResponseEntity<ErrorResponse> payloadTooLarge(PayloadTooLargeException e) {
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+                .body(new ErrorResponse("PAYLOAD_TOO_LARGE", e.getMessage()));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

@@ -5,6 +5,7 @@ import com.examine.application.VendorNotFoundException;
 import com.examine.domain.model.AcceptResult;
 import com.examine.domain.model.NotificationRequest;
 import com.examine.domain.model.Status;
+import com.examine.domain.repository.DeliveryAttemptRepository;
 import com.examine.domain.repository.NotificationRequestRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,6 +39,9 @@ class NotificationControllerTest {
 
     @MockBean
     private NotificationRequestRepository requestRepository;
+
+    @MockBean
+    private DeliveryAttemptRepository attemptRepository;
 
     private static final String VALID_BODY = """
             {"vendorKey":"vendor-a","idempotencyKey":"idem-1","payload":{"userId":"u1","msg":"hi"}}

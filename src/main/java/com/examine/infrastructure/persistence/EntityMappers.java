@@ -60,7 +60,23 @@ public class EntityMappers {
         entity.setUpdatedAt(request.getUpdatedAt());
         entity.setDeliveredAt(request.getDeliveredAt());
         entity.setLastError(request.getLastError());
+        // version is left null — JPA treats null @Version on new entities as first insert (version=0)
         return entity;
+    }
+
+    public void mergeToEntity(NotificationRequest request, NotificationRequestEntity entity) {
+        entity.setVendorKey(request.getVendorKey());
+        entity.setIdempotencyKey(request.getIdempotencyKey());
+        entity.setPayload(request.getPayload());
+        entity.setStatus(request.getStatus());
+        entity.setAttemptCount(request.getAttemptCount());
+        entity.setNextRetryAt(request.getNextRetryAt());
+        entity.setLockedBy(request.getLockedBy());
+        entity.setLockedUntil(request.getLockedUntil());
+        entity.setUpdatedAt(request.getUpdatedAt());
+        entity.setDeliveredAt(request.getDeliveredAt());
+        entity.setLastError(request.getLastError());
+        // id and createdAt are immutable; version is inherited from the managed entity
     }
 
     public IdempotencyRecord toDomain(IdempotencyRecordEntity entity) {

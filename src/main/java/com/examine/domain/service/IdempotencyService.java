@@ -37,23 +37,24 @@ public class IdempotencyService {
 
     public AcceptResult accept(String vendorKey, String idempotencyKey, String payload, Instant now) {
         return idempotencyRecordRepository.findByKey(vendorKey, idempotencyKey)
-                .map(this::toDuplicateResult)
+                .map(record -> toDuplicateResult(record, payload))
                 .orElseGet(() -> createNew(vendorKey, idempotencyKey, payload, now));
     }
 
-    private AcceptResult toDuplicateResult(IdempotencyRecord record) {
+    private AcceptResult toDuplicateResult(IdempotencyRecord record, String incomingPayload) {
+        NotificationRequest existing = notificationRequestRepository.findById(record.getRequestId())
+                .orElse(null);
+        if (existing != null && !existing.getPayload().equals(incomingPayload)) {
+            return new AcceptResult.Conflict(record.getRequestId(),
+                    "idempotency key '" + record.getIdempotencyKey()
+                    + "' already used with different payload for vendor '" + record.getVendorKey() + "'");
+        }
+        Status status = existing != null ? existing.getStatus() : Status.PENDING;
         return switch (record.getStatus()) {
             case SUCCESS -> new AcceptResult.Duplicate(record.getRequestId(), Status.SUCCESS);
             case DEAD_LETTERED -> new AcceptResult.DeadLettered(record.getRequestId());
-            case PENDING, FAILED -> new AcceptResult.Duplicate(
-                    record.getRequestId(), currentStatusOf(record.getRequestId()));
+            case PENDING, FAILED -> new AcceptResult.Duplicate(record.getRequestId(), status);
         };
-    }
-
-    private Status currentStatusOf(String requestId) {
-        return notificationRequestRepository.findById(requestId)
-                .map(NotificationRequest::getStatus)
-                .orElse(Status.PENDING);
     }
 
     private AcceptResult createNew(String vendorKey, String idempotencyKey, String payload, Instant now) {

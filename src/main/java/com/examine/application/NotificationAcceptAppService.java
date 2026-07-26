@@ -5,6 +5,7 @@ import com.examine.domain.repository.VendorConfigRepository;
 import com.examine.domain.service.IdempotencyService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,15 +23,18 @@ public class NotificationAcceptAppService {
     private final IdempotencyService idempotencyService;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final int maxPayloadBytes;
 
     public NotificationAcceptAppService(VendorConfigRepository vendorConfigRepository,
                                         IdempotencyService idempotencyService,
                                         ObjectMapper objectMapper,
-                                        Clock clock) {
+                                        Clock clock,
+                                        @Value("${notification.max-payload-bytes:262144}") int maxPayloadBytes) {
         this.vendorConfigRepository = vendorConfigRepository;
         this.idempotencyService = idempotencyService;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.maxPayloadBytes = maxPayloadBytes;
     }
 
     @Transactional
@@ -38,7 +42,11 @@ public class NotificationAcceptAppService {
         if (!vendorConfigRepository.existsByKey(vendorKey)) {
             throw new VendorNotFoundException(vendorKey);
         }
-        return idempotencyService.accept(vendorKey, idempotencyKey, toJson(payload), clock.instant());
+        String json = toJson(payload);
+        if (json.length() > maxPayloadBytes) {
+            throw new PayloadTooLargeException(maxPayloadBytes, json.length());
+        }
+        return idempotencyService.accept(vendorKey, idempotencyKey, json, clock.instant());
     }
 
     private String toJson(Map<String, Object> payload) {

@@ -64,7 +64,8 @@ class DeadLetterAdminControllerTest {
         when(replayAppService.listDeadLetters(100)).thenReturn(List.of(
                 new NotificationStatusResponse("req-1", "vendor-a", Status.DEAD_LETTERED,
                         3, Instant.parse("2026-07-26T10:00:00Z"), null, "client error: 400",
-                        Instant.parse("2026-07-26T09:00:00Z"), Instant.parse("2026-07-26T10:00:00Z"))));
+                        Instant.parse("2026-07-26T09:00:00Z"), Instant.parse("2026-07-26T10:00:00Z"),
+                        List.of())));
 
         mockMvc.perform(get("/admin/v1/dead-letters"))
                 .andExpect(status().isOk())

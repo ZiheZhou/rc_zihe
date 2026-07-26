@@ -43,6 +43,9 @@ public class NotificationRequestEntity {
 
     private String lastError;
 
+    @jakarta.persistence.Version
+    private Long version;
+
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
 
@@ -81,4 +84,7 @@ public class NotificationRequestEntity {
 
     public String getLastError() { return lastError; }
     public void setLastError(String lastError) { this.lastError = lastError; }
+
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
 }
